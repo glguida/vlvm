@@ -1,0 +1,6 @@
+Support for multiple procs.
+
+Need to wait for other procs to stop on gc.
+Locking of lists in vlvm.
+gc should wait (tygcon);
+

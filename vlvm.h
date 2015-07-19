@@ -23,10 +23,10 @@ void vlty_gcsn(vlty id, void (*)(vlproc *,void *));
 const char *vlty_name(vlty id);
 const int vlty_imm(vlty id);
 
+void vlgc_run(void);
+void vlgc_trim(void);
 
 void vlvm_init(vlproc *proc);
-void vlvm_gc(vlproc *proc);
-void vlvm_trim(void);
 void vlvm_gcwk(vlproc *proc, uintptr_t val);
 
 void vlvm_en(vlproc *proc, vlreg op, vlty type);
@@ -34,10 +34,5 @@ void vlvm_cp(vlproc *proc, vlreg dst, vlreg src);
 void vlvm_pu(vlproc *proc, vlreg op);
 int vlvm_po(vlproc *proc, vlreg op);
 void vlvm_un(vlproc *proc, vlreg op, vlty *type, void **ptr);
-
-/* PROBLABLY IMPLEMENT THIS: 
- *  There are two differents kind of types. the one calling the slab allocator
- * and the immediate ones, which can be set in value as they please. */
-void vlvm_im(vlreg reg, uintptr_t im); /* If type is IMM */
 
 #endif

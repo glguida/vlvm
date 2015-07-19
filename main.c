@@ -55,7 +55,7 @@ main()
 	}
 
 	tycache_dumpstats();
-	vlvm_gc(&vm);
+	vlgc_run();
 	tycache_dumpstats();
 
 	vlvm_pu(&vm, 2);
@@ -69,7 +69,7 @@ main()
 	
 
 	tycache_dumpstats();
-	vlvm_gc(&vm);
+	vlgc_run();
 	tycache_dumpstats();
 	
 	printf("pop: %d", vlvm_po(&vm, 0));
@@ -86,9 +86,9 @@ main()
 	}
 
 	tycache_dumpstats();
-	vlvm_gc(&vm);
+	vlgc_run();
 	tycache_dumpstats();
-	vlvm_trim();
+	vlgc_trim();
 	tycache_dumpstats();
 	
 	return 0;

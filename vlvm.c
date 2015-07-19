@@ -21,6 +21,7 @@ struct sthdr {
 };
 
 static struct type types[NTYPES];
+LIST_HEAD(vlprocs, __vlproc) vlvm_procs = LIST_HEAD_INITIALIZER(vlvm_procs);
 
 static void stgcscan(vlproc *proc);
 
@@ -34,18 +35,6 @@ void vlvm_gcwk(vlproc *proc, uintptr_t val)
 
 	if (types[ty].gcscan != NULL)
 		types[ty].gcscan(proc, ptr);
-}
-
-void vlvm_gc(vlproc *proc)
-{
-	int i;
-
-	tycache_gcstart();
-	for (i = 0; i < NREGS; i++)
-		vlvm_gcwk(proc, proc->regs[i]);
-
-	stgcscan(proc);
-	tycache_gcend();
 }
 
 static uintptr_t tyalloc(vlty type)
@@ -67,7 +56,7 @@ static uintptr_t
 rgget(vlproc *proc, vlreg reg)
 {
 
-	if (reg >= NREGS)
+    if (reg >= NREGS)
 		return NIL;
 	return proc->regs[reg];
 }
@@ -232,7 +221,22 @@ vlty_imm(vlty id)
 }
 
 void
-vlvm_trim(void)
+vlgc_run(void)
+{
+	int i;
+	vlproc *p;
+
+	tycache_gcstart();
+	LIST_FOREACH(p, &vlvm_procs, vlist) {
+		for (i = 0; i < NREGS; i++)
+			vlvm_gcwk(p, p->regs[i]);
+		stgcscan(p);
+	}
+	tycache_gcend();
+}
+
+void
+vlgc_trim(void)
 {
 	vlty i;
 
@@ -250,6 +254,8 @@ vlvm_init(vlproc *proc)
 	proc->tyref = NIL;
 	for (i = 0; i < NREGS; i++)
 		proc->regs[i] = NIL;
+
+	LIST_INSERT_HEAD(&vlvm_procs, proc, vlist);
 }
 
 void
