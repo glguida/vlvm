@@ -54,5 +54,16 @@ static inline void ___freepage(void *ptr)
 	munmap(ptr, ___pagesize());
 }
 
+#define ___log(...) printf(__VA_ARGS__)
+#define ___dbg(...) printf(__VA_ARGS__)
+
+#ifndef ___dbg
+#define ___dbg(...)
+#endif
+
+#ifndef ___log
+#define ___log(...)
+#endif
+
 #endif
 
