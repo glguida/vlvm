@@ -19,9 +19,16 @@ typedef struct __vlproc {
 } vlproc;
 
 int vlty_init(vlty id, const char *name, size_t size);
+void vlty_gcsn(vlty id, void (*)(vlproc *,void *));
 const char *vlty_name(vlty id);
+const int vlty_imm(vlty id);
+
 
 void vlvm_init(vlproc *proc);
+void vlvm_gc(vlproc *proc);
+void vlvm_trim(void);
+void vlvm_gcwk(vlproc *proc, uintptr_t val);
+
 void vlvm_en(vlproc *proc, vlreg op, vlty type);
 void vlvm_cp(vlproc *proc, vlreg dst, vlreg src);
 void vlvm_pu(vlproc *proc, vlreg op);

@@ -12,19 +12,40 @@ struct type {
 	char        *name;
 	struct slab cache;
 	unsigned    imm:1;
+	void        (*gcscan)(vlproc *, void *);
 };
 
 struct sthdr {
+	uint64_t magic;
 	struct sthdr *prev;
 };
 
-
 static struct type types[NTYPES];
 
+static void stgcscan(vlproc *proc);
 
-static inline vlty tyid(struct type *ty)
+void vlvm_gcwk(vlproc *proc, uintptr_t val)
 {
-	return ((uintptr_t)ty-(uintptr_t)types)/sizeof(types[0]);
+	vlty ty = val & TYMASK;
+	void *ptr = (void *)(val & ~TYMASK);
+
+	if (!types[ty].imm)
+		tycache_mark(ptr);
+
+	if (types[ty].gcscan != NULL)
+		types[ty].gcscan(proc, ptr);
+}
+
+void vlvm_gc(vlproc *proc)
+{
+	int i;
+
+	tycache_gcstart();
+	for (i = 0; i < NREGS; i++)
+		vlvm_gcwk(proc, proc->regs[i]);
+
+	stgcscan(proc);
+	tycache_gcend();
 }
 
 static uintptr_t tyalloc(vlty type)
@@ -84,6 +105,9 @@ stlast(struct sthdr *sthdr)
 {
 	uintptr_t ptr;
 
+	if (sthdr == NULL)
+		return NULL;
+
 	ptr =(uintptr_t)sthdr + ___pagesize() - sizeof(uintptr_t);
 	return (uintptr_t *)ptr;
 }
@@ -100,11 +124,12 @@ stgrow(vlproc *proc)
 {
 	uintptr_t *ptr = proc->stptr + 1;
 
-	if (sthdr(proc->stptr) != sthdr(ptr)) {
+	if (proc->stptr == NULL || sthdr(proc->stptr) != sthdr(ptr)) {
 		struct sthdr *new;
 
 		new = (struct sthdr *)___allocpage();
 		new->prev = sthdr(proc->stptr);
+		new->magic = 0xcafebabe;
 		ptr = stfirst(new);
 	}
 	proc->stptr = ptr;
@@ -113,13 +138,14 @@ stgrow(vlproc *proc)
 static int
 stshrink(vlproc *proc)
 {
+	if (proc->stptr == NULL)
+		return -1;
+
 	if (proc->stptr == stfirst(sthdr(proc->stptr))) {
 		struct sthdr *prev, *curr;
 
 		curr = sthdr(proc->stptr);
 		prev = curr->prev;
-		if (prev == NULL)
-			return -1;
 		proc->stptr = stlast(prev);
 		___freepage((void *)curr);
 	} else {
@@ -128,15 +154,31 @@ stshrink(vlproc *proc)
 	return 0;
 }
 
+static void
+stgcscan(vlproc *proc)
+{
+	uintptr_t *first, *stptr = proc->stptr;
+
+	while (stptr != NULL) {
+		first = stfirst(sthdr(stptr));
+		do {
+			vlvm_gcwk(proc, *stptr);
+		} while (--stptr >= first);
+		stptr = stlast(sthdr(stptr)->prev);
+	}
+}
+
 static uintptr_t
 stget(vlproc *proc)
 {
+
 	return *proc->stptr;
 }
 
 static void
 stset(vlproc *proc, uintptr_t val)
 {
+
 	*proc->stptr = val;
 }
 
@@ -159,8 +201,16 @@ vlty_init(vlty id, const char *name, size_t size)
 	}
 	types[id].name = (char *)name;
 	types[id].imm = (size == 0);
+	types[id].gcscan = NULL;
 
 	return 0;
+}
+
+void
+vlty_gcsn(vlty id, void (*fn)(vlproc *, void *))
+{
+
+	types[id].gcscan = fn;
 }
 
 const char *
@@ -172,17 +222,32 @@ vlty_name(vlty id)
 	return types[id].name;
 }
 
+const int
+vlty_imm(vlty id)
+{
+	if (id >= NTYPES)
+		return 0;
+
+	return types[id].imm;
+}
+
+void
+vlvm_trim(void)
+{
+	vlty i;
+
+	for (i = 0; i <NTYPES; i++)
+		if (!types[i].imm)
+			tycache_shrink(&types[i].cache);
+}
+
 void
 vlvm_init(vlproc *proc)
 {
 	int i;
-	struct sthdr *sh;
 
-	sh = (struct sthdr *)___allocpage();
-	sh->prev = NULL;
-	proc->stptr = stfirst(sh);
+	proc->stptr = NULL;
 	proc->tyref = NIL;
-	printf("stptr = %p\n", proc->stptr);;
 	for (i = 0; i < NREGS; i++)
 		proc->regs[i] = NIL;
 }
@@ -196,7 +261,6 @@ vlvm_en(vlproc *proc, vlreg reg, vlty type)
 		return;
 	rgclear(proc, reg);
 	p = tyalloc(type); /* gc disabled */
-	printf("%p\n", p);
 	rgset(proc, reg, p);
 	p = NIL; tygcon(); /* gc reenabled */
 }
