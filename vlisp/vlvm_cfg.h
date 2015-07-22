@@ -14,9 +14,11 @@
 
 
 /*
- * VLVM machine dependent
+ * VLVM machine dependent settings
  */
 
+#include <inttypes.h>
+#include <sys/queue.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -53,6 +55,36 @@ static inline void ___freepage(void *ptr)
 
 	munmap(ptr, ___pagesize());
 }
+
+#ifndef DECLARE_SPIN_LOCK
+#define DECLARE_SPIN_LOCK(_x)
+#endif
+#ifndef SPIN_LOCK_INIT
+#define SPIN_LOCK_INIT(_x)
+#endif
+#ifndef SPIN_LOCK
+#define SPIN_LOCK(_x)
+#endif
+#ifndef SPIN_UNLOCK
+#define SPIN_UNLOCK(_x)
+#endif
+#ifndef SPIN_LOCK_FREE
+#define SPIN_LOCK_FREE(_x)
+#endif
+
+#ifndef GC_DISABLED
+#define GC_DISABLED(_x)
+#endif
+#ifndef GC_ENABLED
+#define GC_ENABLED(_x)
+#endif
+#ifndef GC_START
+#define GC_START(_x)
+#endif
+#ifndef GC_END
+#define GC_END(_x)
+#endif
+
 
 #define ___log(...) printf(__VA_ARGS__)
 #define ___dbg(...) printf(__VA_ARGS__)

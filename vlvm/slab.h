@@ -8,17 +8,12 @@
 #define SLABFUNC(_s) tycache_##_s
 #define SLABSQUEUE slabsq
 
-#define DECLARE_SPIN_LOCK(_X)
-#define SPIN_LOCK_INIT(_x) 
-#define SPIN_LOCK(_x) 
-#define SPIN_UNLOCK(_x)
-#define SPIN_LOCK_FREE(_x)
-
 struct slab {
-	DECLARE_SPIN_LOCK(_x)
+        DECLARE_SPIN_LOCK(lock);
 	char *name;
 	size_t objsize;
-	void (*ctr) (void *obj, void *opq, int dec);
+	void (*ctr) (void *obj, void *opq);
+	void (*dtr) (void *obj);
 	unsigned emptycnt;
 	unsigned sweepcnt;
 	unsigned freecnt;
@@ -41,7 +36,9 @@ int SLABFUNC(mark)(void *ptr);
 void SLABFUNC(gcend)(void);
 struct slab *SLABFUNC(resolve)(void *ptr);
 int SLABFUNC(register) (struct slab * sc, const char *name, size_t objsize,
-		    void (*ctr) (void *, void *, int), int align);
+			void (*ctr) (void *, void *),
+			void (*dtr) (void *),
+			unsigned align);
 void SLABFUNC(deregister) (struct slab * sc);
 void SLABFUNC(dumpstats)(void);
 

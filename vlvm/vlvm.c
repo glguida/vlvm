@@ -21,23 +21,29 @@ struct sthdr {
 };
 
 static struct type types[NTYPES];
-LIST_HEAD(vlprocs, __vlproc) vlvm_procs = LIST_HEAD_INITIALIZER(vlvm_procs);
 
 static void stgcscan(vlproc *proc);
-
 void vlvm_gcwk(vlproc *proc, uintptr_t val)
 {
 	vlty ty = val & TYMASK;
 	void *ptr = (void *)(val & ~TYMASK);
+	struct type *type = types + ty;
 
-	if (!types[ty].imm)
-		tycache_mark(ptr);
+	/* We do not support, rather arbitrarily, immediate root
+	   objects.  We could, but not being able to mark them means
+	   they'll be scanned multiple times. Enable them only if you 
+	   need them. */
+	if (type->imm)
+		return;
 
-	if (types[ty].gcscan != NULL)
-		types[ty].gcscan(proc, ptr);
+	if (tycache_mark(ptr))
+		return;
+
+	if (type->gcscan != NULL)
+		type->gcscan(proc, ptr);
 }
 
-static uintptr_t tyalloc(vlty type)
+static uintptr_t tyalloc(vlty type, void *arg)
 {
 	uintptr_t ret;
 	struct type *ty;
@@ -47,7 +53,7 @@ static uintptr_t tyalloc(vlty type)
 
 	if (ty->imm) return type;
 
-	ret = (uintptr_t)tycache_alloc_opq(&ty->cache, NULL);
+	ret = (uintptr_t)tycache_alloc_opq(&ty->cache, arg);
 	ret |= type;
 	return ret;
 }
@@ -56,7 +62,7 @@ static uintptr_t
 rgget(vlproc *proc, vlreg reg)
 {
 
-    if (reg >= NREGS)
+	if (reg >= NREGS)
 		return NIL;
 	return proc->regs[reg];
 }
@@ -172,7 +178,9 @@ stset(vlproc *proc, uintptr_t val)
 }
 
 int
-vlty_init(vlty id, const char *name, size_t size)
+vlty_init(vlty id, const char *name, size_t size,
+	void (*ctr)(void *ptr,void*arg),
+	void (*dtr)(void *ptr))
 {
 	int rc;
 
@@ -185,7 +193,7 @@ vlty_init(vlty id, const char *name, size_t size)
 	
 	if (size) {
 		rc = tycache_register(&types[id].cache,
-				      name, size, NULL, TYPEBITS);
+				      name, size, ctr, dtr, TYPEBITS);
 		if (rc) return -1;
 	}
 	types[id].name = (char *)name;
@@ -221,22 +229,32 @@ vlty_imm(vlty id)
 }
 
 void
-vlgc_run(void)
+vlgc_start(void)
+{
+	GC_START();
+	tycache_gcstart();
+}
+
+void
+vlgc_run(vlproc *p)
 {
 	int i;
-	vlproc *p;
 
-	tycache_gcstart();
-	LIST_FOREACH(p, &vlvm_procs, vlist) {
-		for (i = 0; i < NREGS; i++)
-			vlvm_gcwk(p, p->regs[i]);
-		stgcscan(p);
-	}
+	for (i = 0; i < NREGS; i++)
+		vlvm_gcwk(p, p->regs[i]);
+	stgcscan(p);
+}
+
+void
+vlgc_end(void)
+{
 	tycache_gcend();
+	GC_END();
 }
 
 void
 vlgc_trim(void)
+
 {
 	vlty i;
 
@@ -254,48 +272,34 @@ vlvm_init(vlproc *proc)
 	proc->tyref = NIL;
 	for (i = 0; i < NREGS; i++)
 		proc->regs[i] = NIL;
-
-	LIST_INSERT_HEAD(&vlvm_procs, proc, vlist);
 }
 
 void
-vlvm_en(vlproc *proc, vlreg reg, vlty type)
+vlvm_new(vlproc *proc, vlreg reg, vlty type, void *arg)
 {
 	uintptr_t p;
 
 	if ((reg >= NREGS) || (type >= NTYPES))
 		return;
+	GC_DISABLED();
 	rgclear(proc, reg);
-	p = tyalloc(type); /* gc disabled */
+	p = tyalloc(type, arg);
 	rgset(proc, reg, p);
-	p = NIL; tygcon(); /* gc reenabled */
+	GC_ENABLED();
 }
 
 void
-vlvm_cp(vlproc *proc, vlreg dst, vlreg src)
+vlvm_cpy(vlproc *proc, vlreg dst, vlreg src)
 {
+	uintptr_t v = rgget(proc, src);
 
-	rgset(proc, dst, rgget(proc, src));
+	GC_DISABLED();
+	rgset(proc, dst, v);
+	GC_ENABLED();
 }
 
 void
-vlvm_pu(vlproc *proc, vlreg reg)
-{
-
-	stgrow(proc);
-	stset(proc, rgget(proc, reg));
-}
-
-int
-vlvm_po(vlproc *proc, vlreg reg)
-{
-
-	rgset(proc, reg, stget(proc));
-	return stshrink(proc);
-}
-
-void
-vlvm_un(vlproc *proc, vlreg reg, vlty *type, void **ptr)
+vlvm_get(vlproc *proc, vlreg reg, vlty *type, void **ptr)
 {
 	uintptr_t v;
 
@@ -304,4 +308,39 @@ vlvm_un(vlproc *proc, vlreg reg, vlty *type, void **ptr)
 		*type = v & TYMASK;
 	if (ptr)
 		*ptr = (void *)(v & ~TYMASK);
+}
+
+void
+vlvm_set(vlproc *proc, vlreg reg, vlty type, void *ptr)
+{
+	uintptr_t v = type | (uintptr_t)ptr;
+
+	GC_DISABLED();
+	rgset(proc, v, reg);
+	GC_ENABLED();
+}
+
+void
+vlvm_psh(vlproc *proc, vlreg reg)
+{
+	uintptr_t v;
+
+	v = rgget(proc, reg);
+	GC_DISABLED();
+	stgrow(proc);
+	stset(proc, v);
+	GC_ENABLED();
+}
+
+int
+vlvm_pop(vlproc *proc, vlreg reg)
+{
+	int r;
+
+	GC_DISABLED();
+	rgset(proc, reg, stget(proc));
+	r = stshrink(proc);	
+	GC_ENABLED();
+
+	return r;
 }

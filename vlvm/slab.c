@@ -58,7 +58,7 @@ static const size_t ___slabobjs(const size_t size)
 	  8s * o = 8P - 8h - o + 63;
 	  o = (8P - 8h + 63)/(8s + 1)
 	*/
-	return c1 / (8 * size + 1);
+	return c1 / (8 * size + 1) - 1;
 }
 
 static unsigned ___slabbmapno(struct slab *sc)
@@ -183,11 +183,17 @@ static inline void
 _free(struct slabhdr *sh,
       int i, int j, int k, int l, int m, int h)
 {
-	struct objhdr *ptr;
+	struct slab *sc = sh->cache;
+	void *ptr;
 	unsigned x = BPOS(i,j,k,l,m,h);
 	if (x >= ___slabobjs(sh->cache->objsize))
 		return;
-	ptr = (struct objhdr *)___slabgetptr(sh, x);
+	ptr = (void *)___slabgetptr(sh, x);
+
+	if (sc->dtr)
+		sc->dtr(ptr + MAX(sizeof(struct objhdr),
+				  (1 << VLVM_TYPEBITS)));
+
 	___dbg("Adding to list %p (%p:%d)\n", ptr, sh, x);
 	SLIST_INSERT_HEAD(&sh->freeq, (struct objhdr *) ptr, list_entry);
 }
@@ -359,11 +365,12 @@ void *SLABFUNC(alloc_opq) (struct slab * sc, void *opq) {
 	SPIN_UNLOCK(sc->lock);
 
 
-	addr = (void *) oh;
+	addr = (void *)oh;
 	memset(addr, 0, sc->objsize);
-
+	if (sc->dtr)
+		addr += MAX(sizeof(struct objhdr), (1 << VLVM_TYPEBITS));
 	if (sc->ctr)
-		sc->ctr(addr, opq, 0);
+		sc->ctr(addr, opq);
 
       out:
 	return addr;
@@ -374,14 +381,14 @@ void SLABFUNC(free) (void *ptr) {
 	struct slabhdr *sh;
 	unsigned max_objs;
 
-	sh = ___slabgethdr(ptr);
+	sh = (struct slabhdr *)___slabgethdr(ptr);
 	if (!sh)
 		return;
 	sc = sh->cache;
 	max_objs = ___slabobjs(sc->objsize);
 
-	if (sc->ctr)
-		sc->ctr(ptr, NULL, 1);
+	if (sc->dtr)
+		sc->dtr(ptr + MAX(sizeof(struct objhdr),(1 << VLVM_TYPEBITS)));
 
 	SPIN_LOCK(sc->lock);
 	SLIST_INSERT_HEAD(&sh->freeq, (struct objhdr *) ptr, list_entry);
@@ -461,21 +468,22 @@ SLABFUNC(mark)(void *ptr)
 
 	sh = ___slabgethdr(ptr);
 	sc = sh->cache;
+	objno = ___slabgetobjno(sh, ptr) / 64;
+	bitno = ___slabgetobjno(sh, ptr) % 64;
 
+	SPIN_LOCK(sc->lock);
 	if (sh->magic == MAGIC2) {
 		LIST_REMOVE(sh, list_entry);
 		LIST_INSERT_HEAD(&sc->sweepq, sh, list_entry);
 		sc->emptycnt--;
 		sc->sweepcnt++;
 		sh->magic = MAGIC1;
-		SLIST_INIT(&sh->freeq);
+		SLIST_INIT(&sh->freeq);	
 	}
 
-	objno = ___slabgetobjno(sh, ptr) / 64;
-	bitno = ___slabgetobjno(sh, ptr) % 64;
 	marked = sh->bmap[objno] & (1LL << bitno);
 	if (marked)
-		return 1;
+		goto out;
 
 	sh->bmap[objno] |= (1LL << bitno);
 	sh->freecnt--;
@@ -485,17 +493,44 @@ SLABFUNC(mark)(void *ptr)
 		sc->sweepcnt--;
 		sc->fullcnt++;
 	}
-	return 0;
+	SPIN_UNLOCK(sc->lock);
+
+out:
+	return marked;
 }
 
 void
 SLABFUNC(gcend) (void)
 {
+	int i;
+	struct slab *sc;
+	struct slabhdr *sh;
+
+	SPIN_LOCK(slabs_lock);
+	LIST_FOREACH(sc, &SLABSQUEUE, list_entry) {
+		if (sc->dtr == NULL)
+			continue;
+		SPIN_LOCK(sc->lock);
+		LIST_FOREACH(sh, &sc->emptyq, list_entry) {
+			uintptr_t ptr;
+			const size_t objs = ___slabobjs(sc->objsize);
+
+			for (i = 0; i < objs; i++) {
+				ptr = ___slabgetptr(sh, i);
+				sc->dtr((void *)ptr
+					+ MAX(sizeof(struct objhdr),
+					      (1 << VLVM_TYPEBITS)));
+			}
+		}
+		SPIN_UNLOCK(sc->lock);
+	}
+	SPIN_UNLOCK(slabs_lock);
 }
 
 int
 SLABFUNC(register) (struct slab * sc, const char *name, size_t objsize,
-		    void (*ctr) (void *, void *, int), int align) {
+		    void (*ctr) (void *, void *), void (*dtr) (void *),
+		    unsigned align) {
 
 	if (initialised == 0) {
 		slab_size = ___slabsize();
@@ -506,6 +541,11 @@ SLABFUNC(register) (struct slab * sc, const char *name, size_t objsize,
 
 	sc->name = (char *)name;
 
+	/* Add objhdr to size of object in case of destructor,
+         * as we can't differenziate entries in the free list and
+         * freed pointers through garbage collection */
+	if (dtr)
+		objsize += MAX(sizeof(struct objhdr), (1 << VLVM_TYPEBITS));
 	if (align) {
 		align = ((1L << align) - 1);
 		sc->objsize = ((objsize + align) & ~align);
@@ -514,6 +554,7 @@ SLABFUNC(register) (struct slab * sc, const char *name, size_t objsize,
 	}
 	printf("objsize: %zd (%zd)\n", sc->objsize, objsize);
 	sc->ctr = ctr;
+	sc->dtr = dtr;
 
 	sc->emptycnt = 0;
 	sc->freecnt = 0;
