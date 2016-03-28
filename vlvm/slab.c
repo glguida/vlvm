@@ -344,7 +344,7 @@ void *SLABFUNC(alloc_opq) (struct slab * sc, void *opq) {
 		}
 	}
 
-	if (!sh && !LIST_EMPTY(&sc->sweepq)) {
+	while (!sh && !LIST_EMPTY(&sc->sweepq)) {
 		sh = LIST_FIRST(&sc->sweepq);
 		bitscan(sh);
 		sc->sweepcnt--;
@@ -352,9 +352,12 @@ void *SLABFUNC(alloc_opq) (struct slab * sc, void *opq) {
 		if (sh->freecnt == 1) {
 			LIST_INSERT_HEAD(&sc->fullq, sh, list_entry);
 			sc->fullcnt++;
+			sh = NULL;
+			continue;
 		} else {
 			LIST_INSERT_HEAD(&sc->freeq, sh, list_entry);
 			sc->freecnt++;
+			break;
 		}
 	}
 
