@@ -197,8 +197,8 @@ _free(struct slabhdr *sh,
 	___dbg("Adding to list %p (%p:%d)\n", ptr, sh, x);
 	SLIST_INSERT_HEAD(&sh->freeq, (struct objhdr *) ptr, list_entry);
 }
-#define FREE(_i,_j,_k,_l,_m,_h) _free(sh, (_i), (_j), (_k), (_l), (_m), (_h))
 
+#define FREE(_i,_j,_k,_l,_m,_h) _free(sh, (_i), (_j), (_k), (_l), (_m), (_h))
 static inline void
 bitscan(struct slabhdr *sh)
 {
@@ -217,35 +217,42 @@ bitscan(struct slabhdr *sh)
 			continue;
 		}
 		for (j = 0; j < 2; j++, val >>= 32) {
-		    if ((val & 0xffffffff) == (uint32_t)-1)
+			uint32_t kval;
+
+			if ((val & 0xffffffff) == (uint32_t)-1)
 				continue;
-		    if ((val & 0xffffffff) == 0) {
-			  ___dbg("F32\n");
+			if ((val & 0xffffffff) == 0) {
+				___dbg("F32\n");
 				for (h = 0; h < 32; h++)
 					FREE(i,j,0,0,0,h);
 				continue;
 			}
-			for (k = 0; k < 2; k++, val >>= 16) {
-			    if ((val & 0xffff) == (uint16_t)-1)
+			kval = val & 0xffffffff;
+			for (k = 0; k < 2; k++, kval >>= 16) {
+				uint16_t lval;
+				if ((kval & 0xffff) == (uint16_t)-1)
 					continue;
-			    if ((val & 0xffff) == 0) {
-				  ___dbg("F16\n");
+				if ((kval & 0xffff) == 0) {
+					___dbg("F16\n");
 					for (h = 0; h < 16; h++)
 						FREE(i,j,k,0,0,h);
 					continue;
 				}
-				for (l = 0; l < 2; l++, val >>= 8) {
-					if ((val & 0xff) == (uint8_t)-1)
+				lval = kval & 0xfff;
+				for (l = 0; l < 2; l++, lval >>= 8) {
+					uint8_t mval;
+					if ((lval & 0xff) == (uint8_t)-1)
 						continue;
-					if ((val & 0xff) == 0) {
-					  ___dbg("F8\n");
+					if ((lval & 0xff) == 0) {
+						___dbg("F8\n");
 						for (h = 0; h < 8; h++)
 							FREE(i,j,k,l,0,h);
 						continue;
 					}
-					for (m = 0; m < 2; m++, val >>= 4) {
-						___dbg("F%lx\n", val & 0xf);
-						switch(~val & 0xf) {
+					mval = lval & 0xff;
+					for (m = 0; m < 2; m++, mval >>= 4) {
+						___dbg("f%lx\n", ~mval & 0xf);
+						switch(~mval & 0xf) {
 						case 0:
 							break;
 						case 15:
@@ -272,7 +279,7 @@ bitscan(struct slabhdr *sh)
 							FREE(i,j,k,l,m,2);
 							break;
 						case 9:
-							FREE(i,j,k,l,m,0);
+						    FREE(i,j,k,l,m,0);
 						case 8:
 							FREE(i,j,k,l,m,3);
 							break;
