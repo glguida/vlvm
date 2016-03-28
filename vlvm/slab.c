@@ -137,47 +137,6 @@ struct objhdr {
 	SLIST_ENTRY(objhdr) list_entry;
 };
 
-int SLABFUNC(grow) (struct slab * sc)
-{
-	struct slabhdr *sh;
-
-	sh = ___slaballoc();
-	___log("allocating slab %p\n", sh);
-	if (sh == NULL)
-		return 0;
-
-	sh->magic = MAGIC1;
-	sh->cache = sc;
-
-	SPIN_LOCK(sc->lock);
-	LIST_INSERT_HEAD(&sc->emptyq, sh, list_entry);
-	sc->emptycnt++;
-	SPIN_UNLOCK(sc->lock);
-
-	return 1;
-}
-
-int SLABFUNC(shrink) (struct slab * sc)
-{
-	int shrunk = 0;
-	struct slabhdr *sh;
-
-	SPIN_LOCK(sc->lock);
-	while (!LIST_EMPTY(&sc->emptyq)) {
-		sh = LIST_FIRST(&sc->emptyq);
-		LIST_REMOVE(sh, list_entry);
-		sc->emptycnt--;
-
-		SPIN_UNLOCK(sc->lock);
-		___slabfree((void *) sh);
-		shrunk++;
-		SPIN_LOCK(sc->lock);
-	}
-	SPIN_UNLOCK(sc->lock);
-
-	return shrunk;
-}
-
 #define BPOS(i,j,k,l,m,h) (i * 64 + j * 32 + k * 16 + l * 8 + m * 4 + h)
 static inline void
 _free(struct slabhdr *sh,
@@ -302,6 +261,69 @@ bitscan(struct slabhdr *sh)
 }
 
 
+int SLABFUNC(grow) (struct slab * sc)
+{
+	struct slabhdr *sh;
+
+	sh = ___slaballoc();
+	___log("allocating slab %p\n", sh);
+	if (sh == NULL)
+		return 0;
+
+	sh->magic = MAGIC1;
+	sh->cache = sc;
+
+	SPIN_LOCK(sc->lock);
+	LIST_INSERT_HEAD(&sc->emptyq, sh, list_entry);
+	sc->emptycnt++;
+	SPIN_UNLOCK(sc->lock);
+
+	return 1;
+}
+
+int SLABFUNC(sweep) (struct slab * sc)
+{
+	int found_empty = 0;
+	struct slabhdr *sh;
+
+	SPIN_LOCK(sc->lock);
+	while(!LIST_EMPTY(&sc->sweepq)) {
+		sh = LIST_FIRST(&sc->sweepq);
+		LIST_REMOVE(sh, list_entry);
+		sc->sweepcnt--;
+		bitscan(sh);
+		if (sh->freecnt == 1) {
+			LIST_INSERT_HEAD(&sc->fullq, sh, list_entry);
+			sc->fullcnt++;
+		} else {
+			LIST_INSERT_HEAD(&sc->freeq, sh, list_entry);
+			sc->freecnt++;
+		}
+	}
+	SPIN_UNLOCK(sc->lock);
+}
+
+int SLABFUNC(shrink) (struct slab * sc)
+{
+	int shrunk = 0;
+	struct slabhdr *sh;
+
+	SPIN_LOCK(sc->lock);
+	while (!LIST_EMPTY(&sc->emptyq)) {
+		sh = LIST_FIRST(&sc->emptyq);
+		LIST_REMOVE(sh, list_entry);
+		sc->emptycnt--;
+
+		SPIN_UNLOCK(sc->lock);
+		___slabfree((void *) sh);
+		shrunk++;
+		SPIN_LOCK(sc->lock);
+	}
+	SPIN_UNLOCK(sc->lock);
+
+	return shrunk;
+}
+
 void *SLABFUNC(alloc_opq) (struct slab * sc, void *opq) {
 	int tries = 0;
 	void *addr = NULL;
@@ -381,40 +403,6 @@ void *SLABFUNC(alloc_opq) (struct slab * sc, void *opq) {
 
       out:
 	return addr;
-}
-
-void SLABFUNC(free) (void *ptr) {
-	struct slab *sc;
-	struct slabhdr *sh;
-	unsigned max_objs;
-
-	sh = (struct slabhdr *)___slabgethdr(ptr);
-	if (!sh)
-		return;
-	sc = sh->cache;
-	max_objs = ___slabobjs(sc->objsize);
-
-	if (sc->dtr)
-		sc->dtr(ptr + MAX(sizeof(struct objhdr),(1 << VLVM_TYPEBITS)));
-
-	SPIN_LOCK(sc->lock);
-	SLIST_INSERT_HEAD(&sh->freeq, (struct objhdr *) ptr, list_entry);
-	sh->freecnt++;
-
-	if (sh->freecnt == 1) {
-		LIST_REMOVE(sh, list_entry);
-		LIST_INSERT_HEAD(&sc->freeq, sh, list_entry);
-		sc->fullcnt--;
-		sc->freecnt++;
-	} else if (sh->freecnt == max_objs) {
-		LIST_REMOVE(sh, list_entry);
-		LIST_INSERT_HEAD(&sc->emptyq, sh, list_entry);
-		sc->freecnt--;
-		sc->emptycnt++;
-	}
-	SPIN_UNLOCK(sc->lock);
-
-	return;
 }
 
 struct slab *SLABFUNC(resolve)(void *ptr)
