@@ -1,7 +1,7 @@
 #ifndef __slab_h
 #define __slab_h
 
-#include <sys/queue.h>
+#include "queue.h"
 #include "vlvm_cfg.h"
 
 #define SLABFUNC_NAME "types cache"

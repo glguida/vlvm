@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include <sys/queue.h>
+#include "queue.h"
 
 #define MAGIC_SIZE 16
 #define MAGIC1 0xbad51ab
