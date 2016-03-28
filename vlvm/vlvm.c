@@ -282,7 +282,6 @@ vlvm_new(vlproc *proc, vlreg reg, vlty type, void *arg)
 	if ((reg >= NREGS) || (type >= NTYPES))
 		return;
 	GC_DISABLED();
-	rgclear(proc, reg);
 	p = tyalloc(type, arg);
 	rgset(proc, reg, p);
 	GC_ENABLED();
