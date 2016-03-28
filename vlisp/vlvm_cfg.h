@@ -17,8 +17,8 @@
  * VLVM machine dependent settings
  */
 
+#include "queue.h"
 #include <inttypes.h>
-#include <sys/queue.h>
 #include <sys/mman.h>
 #include <unistd.h>
 

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <search.h>
+#include <setjmp.h>
 #include <inttypes.h>
 #include "vlvm.h"
 #include "vlisp.h"
@@ -12,7 +13,14 @@
 
 vlproc vm;
 
-#define evlvm_error(...) do { } while(0)
+char *estr;
+jmp_buf ebuf;
+
+#define evlvm_error(...)			\
+	do {					\
+		asprintf(&estr, __VA_ARGS__);	\
+		longjmp(ebuf,1);		\
+	} while(0)
 
 /*
  * Garbage collector.
@@ -24,7 +32,7 @@ void gcrun(void)
 	vlgc_start();
 	vlgc_run(&vm);
 	vlgc_end();
-	vlgc_trim();
+	//	vlgc_trim();
 }
 
 
@@ -39,17 +47,27 @@ struct cons {
 	uintptr_t a, d;
 };
 
+struct cons_arg {
+	vlreg ar, dr;
+};
+
 void cons_ctr(void *ptr, void *arg)
 {
+	vlty aty, dty;
+	uintptr_t aptr, dptr;
 	struct cons *d = (struct cons *)ptr;
-	struct cons *s = (struct cons *)arg;
+	struct cons_arg *s = (struct cons_arg *)arg;
 
 	if (arg == NULL) {
 		d->a = NIL;
 		d->d = NIL;
 		return;
 	}
-	*d = *s;
+
+	vlvm_get(&vm, s->ar, &aty, (void **)&aptr);
+	vlvm_get(&vm, s->dr, &dty, (void **)&dptr);
+	d->a = aty | aptr;
+	d->d = dty | dptr;
 }
 
 void cons_gcsn(vlproc *proc, void *ptr)
@@ -80,6 +98,10 @@ void str_dtr(void *ptr)
 #define TYPE_ENV VLTY_ENV
 #define ENV_SIZE 32
 
+struct env_arg {
+	vlreg base;
+};
+
 struct env {
 	struct env_entry {
 		uintptr_t key;
@@ -91,13 +113,21 @@ struct env {
 
 static void env_ctr(void *ptr, void *arg)
 {
-	struct env *orig = (struct env *)arg;
+	vlty ty;
+	uintptr_t regptr;
+	struct env_arg *envarg = (struct env_arg *)arg;
 	struct env *new = (struct env *)ptr;
 
-	printf("ARG: %p\n", arg);
-	if (arg)
-		*new = *orig;
-	new->next = orig;
+	memset(new, 0, sizeof(*new));
+	if (arg == NULL)
+		return;
+
+	vlvm_get(&vm, envarg->base, &ty, &regptr);
+	if (ty != TYPE_ENV)
+		return;
+	*new = *(struct env *)regptr;
+	new->next = (struct env *)regptr;
+	return;
 }
 
 static void env_dtr(void *ptr)
@@ -106,19 +136,16 @@ static void env_dtr(void *ptr)
 	struct env_entry *e, *n, *l;
 	int i;
 
-	printf("Freeing env %p", env);
 	for (i = 0; i < ENV_SIZE; i++) {
 		l = env->next ? env->next->table[i] : NULL;
 		e = env->table[i];
 		while (e != l) {
-			printf("%p ", e);
 			n = e->next;
 			free(e);
 			e = n;
 		}
-		printf(" - ");
 	}
-	printf("\n");
+	memset(env, 0, sizeof(*env));
 }
 
 void
@@ -136,8 +163,9 @@ env_gcsn(vlproc *proc, void *ptr)
 			e = e->next;
 		}
 	}
-	if (env->next)
+	if (env->next) {
 		vlvm_gcwk(proc, ((uintptr_t)env->next) | TYPE_ENV);
+	}
 }
 
 static unsigned env_hashf(uintptr_t key)
@@ -151,18 +179,16 @@ env_lookup(struct env *env, uintptr_t key)
 	struct env_entry *e;
 	unsigned n;
 
-	printf("searching key %lx\n", key);
 	n = env_hashf(key);	
 	e = env->table[n];
 	while (e != NULL) {
-		printf("Found %lx (== %lx) at %p\n", e->key, key, e);
 		if (e->key == key)
 			break;
 		e = e->next;
 	}
 
 	if (e == NULL)
-		evlvm_error("Undefined", key);
+		evlvm_error("Undefined %s", key);
 	return e->val;
 }
 
@@ -172,7 +198,6 @@ env_define(struct env *env, uintptr_t key, uintptr_t value)
 	struct env_entry *e;
 	unsigned n = env_hashf(key);
 
-	printf("adding %lx with value %lx\n", key, value);
 	e = malloc(sizeof(struct env_entry));
 	e->key = key;
 	e->val = value;
@@ -266,14 +291,11 @@ cdr(vlreg dst, vlreg reg)
 void
 cons(vlreg dst, vlreg ar, vlreg dr)
 {
-	struct cons cons;
-	uintptr_t aptr, dptr;
-	vlty aty, dty;
-	vlvm_get(&vm, ar, &aty, (void **)&aptr);
-	vlvm_get(&vm, dr, &dty, (void **)&dptr);
-	cons.a = aptr | aty;
-	cons.d = dptr | dty;
-	vlvm_new(&vm, dst, TYPE_CONS, &cons);
+	struct cons_arg arg;
+
+	arg.ar = ar;
+	arg.dr = dr;
+	vlvm_new(&vm, dst, TYPE_CONS, &arg);
 }
 
 void eval(vlreg dst, vlreg exp, vlreg env)
@@ -287,6 +309,7 @@ main()
 	int i;
 	vlty ty;
 	struct env *env1, *env2;
+	struct env_arg env_arg;
 	void *ptr;
 
 	hcreate(1000);
@@ -300,12 +323,17 @@ main()
 	vlty_gcsn(TYPE_CONS, cons_gcsn);
 	vlty_gcsn(TYPE_ENV, env_gcsn);
 	vlvm_init(&vm);
+
+	if (setjmp(ebuf)) {
+		free(estr);
+		return -1;
+	};
+	
 	for (i = 0; i < 1000; i++) {
 		cons(2, 1, 2);
 	}
 	for (i = 0; i < VLVM_NREGS; i++) {
 		vlvm_get(&vm, i, &ty, &ptr);
-		printf("R%01X:     %p %s\n", i, ptr, vlty_name(ty));
 	}
 
 	tycache_dumpstats();
@@ -315,10 +343,8 @@ main()
 	vlvm_psh(&vm, 2);
 	vlvm_new(&vm, 2, 0, NULL);
 
-	printf("Push, cleared");
 	for (i = 0; i < VLVM_NREGS; i++) {
 		vlvm_get(&vm, i, &ty, &ptr);
-		printf("R%01X:     %p %s\n", i, ptr, vlty_name(ty));
 	}
 	
 
@@ -326,17 +352,13 @@ main()
 	gcrun();
 	tycache_dumpstats();
 	
-	printf("pop: %d", vlvm_pop(&vm, 0));
 	for (i = 0; i < VLVM_NREGS; i++) {
 		vlvm_get(&vm, i, &ty, &ptr);
-		printf("R%01X:     %p %s\n", i, ptr, vlty_name(ty));
 	}
 	
 	vlvm_new(&vm, 0, 0, NULL);
-	printf("Cleared");
 	for (i = 0; i < VLVM_NREGS; i++) {
 		vlvm_get(&vm, i, &ty, &ptr);
-		printf("R%01X:     %p %s\n", i, ptr, vlty_name(ty));
 	}
 
 	tycache_dumpstats();
@@ -370,6 +392,7 @@ main()
 	printf("%lx ", symbol("ase"));
 	printf("%lx ", symbol("asd"));
 
+	printf("\t\t\tENV base at 3!\n");
 	vlvm_new(&vm, 3, TYPE_ENV, NULL);
 	tycache_dumpstats();
 
@@ -378,8 +401,11 @@ main()
 	env_define(env1, symbol("asd"), symbol("Value of asd"));
 	printf("X: %lx\n", env_lookup(env1, symbol("X")));
 	printf("Y: %lx\n", env_lookup(env1, symbol("asd")));
-	
-	vlvm_new(&vm, 4, TYPE_ENV, env1);
+
+	printf("\t\t\tENV at 4 with base 3!\n");
+	env_arg.base = 3;
+	vlvm_new(&vm, 4, TYPE_ENV, &env_arg);
+	env_arg.base = 4;
 	vlvm_get(&vm, 4, NULL, (void **)&env2);
 	printf("%p <->  %p\n", env1->table[5], env2->table[5]);
 		
@@ -389,14 +415,22 @@ main()
 	printf("X: %lx\n", env_lookup(env2, symbol("X")));
 	printf("X: %lx\n", env_lookup(env1, symbol("X")));	
 
+	printf("\t\t\tREMOVE ENV 3\n");
 	vlvm_new(&vm, 3, TYPE_NIL, NULL);
+	printf("GCRUN!\n");
 	gcrun();
 	tycache_dumpstats();
 	printf("X: %lx\n", env_lookup(env2, symbol("X")));
 	printf("X: %lx\n", env_lookup(env2, symbol("asd")));
 	tycache_dumpstats();
-	vlvm_new(&vm, 4, TYPE_ENV, env2);
+	env_arg.base = 4;
+	printf("\t\t\tENV 4 based on ENV4!\n");
+	vlvm_new(&vm, 4, TYPE_ENV, &env_arg);
 	tycache_dumpstats();
+	printf("GCRUN!\n");
+	gcrun();
+	tycache_dumpstats();
+	printf("LAST RUN!\n");
 	vlvm_new(&vm, 4, TYPE_NIL, NULL);
 	gcrun();
 	tycache_dumpstats();
